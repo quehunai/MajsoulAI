@@ -1,3 +1,6 @@
 [submodule "majsoul_wrapper"]
 	path = majsoul_wrapper
 	url = git@github.com:quehunai/majsoul_wrapper.git
+[submodule "akochan"]
+	path = akochan
+	url = git@github.com:quehunai/akochan.git
