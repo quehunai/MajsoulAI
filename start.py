@@ -1,18 +1,13 @@
 import json
 import time
-import select
-import socket
 import pickle
 import argparse
-import importlib
-from typing import Dict, List, Tuple
-from urllib.parse import quote, unquote
-from enum import Enum
+from typing import Dict, List
 from xmlrpc.client import ServerProxy
 from subprocess import Popen, PIPE
 
 import majsoul_wrapper as sdk
-from majsoul_wrapper import all_tiles, Operation
+from majsoul_wrapper import Operation
 
 class CardRecorder:
     # 记录牌的操作历史mjai json
@@ -230,6 +225,14 @@ class AIWrapper(sdk.GUIInterface, sdk.MajsoulHandler):
             return self.cardmap[int(card[1])]
         else:
             return card
+    
+    def transcard2majsoul(self, card: str) -> str:
+        if len(card) >= 3:
+            return '0' + card[1]
+        elif len(card) == 1:
+            return 'z' + str(self.cardmap.index(card))
+        else:
+            return card
             
     
     def newRound(self, chang: int, ju: int, ben: int, liqibang: int, tiles: List[str], scores: List[int], leftTileCount: int, doras: List[str]):
@@ -290,6 +293,8 @@ class AIWrapper(sdk.GUIInterface, sdk.MajsoulHandler):
         if isLiqi:
             self.cardRecorder.add('reach', actor=self.userid[seat])
         
+        self.lastOperation = operation
+        
         if operation != None:
             assert(operation.get('seat', 0) == self.mySeat)
             # opList = operation.get('operationList', [])
@@ -299,8 +304,10 @@ class AIWrapper(sdk.GUIInterface, sdk.MajsoulHandler):
             #     op['type'] == Operation.MingGang.value for op in opList)
             # canHu = any(op['type'] == Operation.Hu.value for op in opList)
             self.recv()
-
+        
+        
         self.cardRecorder.add('dahai', actor=self.userid[seat], pai=self.transcard(tile), tsumogiri=moqie)
+        
 
     def chiPengGang(self, type_: int, seat: int, tiles: List[str], froms: List[int], tileStates: List[int]):
         super().chiPengGang(type_, seat, tiles, froms, tileStates)
@@ -313,7 +320,7 @@ class AIWrapper(sdk.GUIInterface, sdk.MajsoulHandler):
         
         consumed = [self.transcard(tiles[i]) if froms[i] != seat else None for i in range(len(tiles))]
         
-        type = map(lambda x : 'chi' if x == 0 else 'pon' if x == 1 else 'kakan', type_)
+        type = map(lambda x : 'chi' if x == 0 else 'pon' if x == 1 else 'daiminkan', type_)
         
         self.cardRecorder.add(type, actor=self.userid[seat], target=target, pai=pai, consumed=consumed)
         
@@ -325,11 +332,11 @@ class AIWrapper(sdk.GUIInterface, sdk.MajsoulHandler):
         
         if type_ == 2:
             if tiles[0] == '5':
-                self.cardRecorder.add('daiminkan', actor=self.userid[seat], pai=tiles, consumed=[self.transcard(tiles), self.transcard(tiles), self.transcard('0'+tiles[1])])
+                self.cardRecorder.add('kakan', actor=self.userid[seat], pai=tiles, consumed=[self.transcard(tiles), self.transcard(tiles), self.transcard('0'+tiles[1])])
             elif tiles[0] == '0':
-                self.cardRecorder.add('daiminkan', actor=self.userid[seat], pai=self.transcard(tiles), consumed=[self.transcard('5' + tiles[1]), self.transcard('5' + tiles[1]), self.transcard('5' + tiles[1])])
+                self.cardRecorder.add('kakan', actor=self.userid[seat], pai=self.transcard(tiles), consumed=[self.transcard('5' + tiles[1]), self.transcard('5' + tiles[1]), self.transcard('5' + tiles[1])])
             else:
-                self.cardRecorder.add('daiminkan', actor=self.userid[seat], pai=self.transcard(tiles), consumed=[self.transcard(tiles) for i in range(3)])
+                self.cardRecorder.add('kakan', actor=self.userid[seat], pai=self.transcard(tiles), consumed=[self.transcard(tiles) for i in range(3)])
         elif type_ == 3:
             tile4 = [tiles.replace('0', '5') for i in range(4)]
             if tiles[0] in '05':
@@ -375,19 +382,103 @@ class AIWrapper(sdk.GUIInterface, sdk.MajsoulHandler):
         p.stderr.close()
         json_move = json.loads(move)[0]
         self.lastOperation = json_move
-        # if json_move['type'] == 'tsumo':
-            
-        
-
-        
-        
-        
-        
+        self.runOperation(json_move)
+    
+    def runOperation(self, json_move):
+        if self.wait_a_moment:
+            self.wait_a_moment = False
+            time.sleep(2)
+        self.wait_for_a_while()
+        # 执行操作
+        if json_move['type'] == 'dahai':
+            if not self.isLiqi:
+                self.actionDiscardTile(self.transcard2majsoul(json_move['pai']))
+        elif json_move['type'] == 'none':
+            if not self.isLiqi:
+                self.forceTiaoGuo()
+        elif json_move['type'] == 'chi':
+            if not self.isLiqi:
+                tile1 = self.transcard2majsoul(json_move['consumed'][0])
+                tile2 = self.transcard2majsoul(json_move['consumed'][1])
+                self.actionChiPengGang(sdk.Operation.Chi,[self.transcard2majsoul(pai) for pai in json_move['consumed']]) # 第二个参数p用没有
+                if self.lastOperation != None:
+                    opList = self.lastOperation.get('operationList', [])
+                    opList = [op for op in opList if op['type']
+                            == Operation.Chi.value]
+                    assert(len(opList) == 1)
+                    op = opList[0]
+                    combination = op['combination']
+                    # e.g. combination = ['4s|0s', '4s|5s']
+                    if len(combination) > 1:
+                        # 需要二次选择
+                        combination = [tuple(sorted(c.split('|')))
+                                    for c in combination]
+                        AI_combination = tuple(sorted([tile1, tile2]))
+                        assert(AI_combination in combination)
+                        # 如果有包含红包牌的同构吃但AI犯蠢没选，强制改为吃红包牌
+                        oc = tuple(sorted([i.replace('5', '0')
+                                        for i in AI_combination]))
+                        if oc in combination:
+                            AI_combination = oc
+                        print('clickCandidateMeld AI_combination', AI_combination)
+                        time.sleep(1)
+                        self.clickCandidateMeld(AI_combination)
+        elif json_move['type'] == 'pon':
+            if not self.isLiqi:
+                self.actionChiPengGang(sdk.Operation.Peng,[])
+        elif json_move['type'] == 'daiminkan':
+            if not self.isLiqi:
+                self.actionChiPengGang(sdk.Operation.MingGang,[])
+        elif json_move['type'] == 'ankan':
+            if not self.isLiqi:
+                self.actionChiPengGang(sdk.Operation.MingGang,[])
+        elif json_move['type'] == 'kakan':
+            if not self.isLiqi:
+                self.actionChiPengGang(sdk.Operation.JiaGang,[])
+        elif json_move['type'] == 'reach':
+            if not self.isLiqi:
+                self.actionLiqi()
+                self.cardRecorder.add('reach', actor=self.mySeat)
+                self.recv()
+        elif json_move['type'] == 'reach_accepted':
+            self.isLiqi = True
+        elif json_move['type'] == 'hora':
+            if json_move['actor'] == json_move['target']:
+                self.actionZimo()
+            else:
+                self.actionHu()
                 
-            
-        
-        
-        
-        
-        
-        
+def MainLoop(level=None):
+    # 循环进行段位场对局，level=0~4表示铜/银/金/玉/王之间，None需手动开始游戏
+    # calibrate browser position
+    aiWrapper = AIWrapper()
+    print('waiting to calibrate the browser location')
+    while not aiWrapper.calibrateMenu():
+        print('  majsoul menu not found, calibrate again')
+        time.sleep(3)
+
+    while True:
+        # create AI
+        aiWrapper.init()
+
+        if level != None:
+            aiWrapper.actionBeginGame(level)
+
+        print('waiting for the game to start')
+        while not aiWrapper.isPlaying():
+            time.sleep(3)
+
+        while True:
+            time.sleep(1)
+            aiWrapper.recvFromMajsoul()
+            if aiWrapper.isEnd:
+                aiWrapper.actionReturnToMenu()
+                break
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="MajsoulAI")
+    parser.add_argument('-l', '--level', default=None)
+    args = parser.parse_args()
+    level = None if args.level == None else int(args.level)
+    MainLoop(level=level)
