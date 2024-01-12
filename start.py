@@ -1,4 +1,5 @@
 import json
+import subprocess
 import time
 import pickle
 import argparse
@@ -8,6 +9,7 @@ from subprocess import Popen, PIPE
 
 import majsoul_wrapper as sdk
 from majsoul_wrapper import Operation
+from majsoul_wrapper.liqi import LiqiProto
 
 class CardRecorder:
     # 记录牌的操作历史mjai json
@@ -20,11 +22,13 @@ class CardRecorder:
             "type": "start_game",
         })
     
+    bakazemap = ['E', 'S', 'W', 'N']
+    
     def start(self, bakaze, dora_marker, kyoku, honba, kyotaku, oya, scores, tehais):
         
         self.mjai.append({
             "type": "start_kyoku",
-            "bakaze": bakaze,
+            "bakaze": self.bakazemap[bakaze],
             "dora_marker": dora_marker,
             "kyoku": kyoku,
             "honba": honba,
@@ -35,6 +39,7 @@ class CardRecorder:
         })
         
     def add(self, type, actor=None, pai=None, target=None, consumed=None, tsumogiri=None, dora_marker=None, deltas=None, ura_markers=None):
+        actor = str(actor)
         if type == 'tsumo':
             self.mjai.append({
                 "type": type,
@@ -118,7 +123,7 @@ class CardRecorder:
             })
             
     def get(self):
-        return map(lambda x : json.dump(x), self.mjai).join('\n')
+        return "\n".join(list(map(lambda x : json.dumps(x), self.mjai)))
     
 
 class AIWrapper(sdk.GUIInterface, sdk.MajsoulHandler):
@@ -216,13 +221,14 @@ class AIWrapper(sdk.GUIInterface, sdk.MajsoulHandler):
         else:
             return card        
 
-    cardmap = ['E', 'S', 'W', 'N', 'P', 'F', 'C']
+    cardmap = ['', 'E', 'S', 'W', 'N', 'P', 'F', 'C']
     
     def transcard(self, card: str) -> str:
+        print(card)
         if card[0] == '0':
             return '5'+card[1] + 'r'
-        elif card[0] == 'z':
-            return self.cardmap[int(card[1])]
+        elif card[1] == 'z':
+            return self.cardmap[int(card[0])]
         else:
             return card
     
@@ -249,9 +255,9 @@ class AIWrapper(sdk.GUIInterface, sdk.MajsoulHandler):
         super().newRound(chang, ju, ben, liqibang, tiles, scores, leftTileCount, doras)
         
         self.isLiqi = False
-        self.pengInfo.clear()
+        # self.pengInfo.clear()
         
-        tehais = [tiles if i == self.mySeat else [] for i in range(4)]
+        tehais = [list(map(lambda x:self.transcard(x), tiles)) if i == self.mySeat else ['?' for i in range(13)] for i in range(4)]
         
         self.cardRecorder.start(chang, self.subcard(self.transcard(doras[0])), ju, ben, liqibang, ju, scores, tehais)
         
@@ -265,27 +271,28 @@ class AIWrapper(sdk.GUIInterface, sdk.MajsoulHandler):
         self.cardRecorder.add('dora', dora_marker=self.subcard(self.transcard(dora)))
     
     def dealTile(self, seat: int, leftTileCount: int, liqi: Dict):
-        super().dealTile(self, seat, leftTileCount, liqi)
+        super().dealTile(seat, leftTileCount, liqi)
         
         if liqi:
-            self.cardRecorder.add('reach_accepted', actor=self.userid[liqi.get('seat', 0)])
+            self.cardRecorder.add('reach_accepted', actor=liqi.get('seat', 0))
         
-        self.cardRecorder.add('tsumo', actor=self.userid[seat], pai='?')
+        self.cardRecorder.add('tsumo', actor=seat, pai='?')
         
     def iDealTile(self, seat: int, tile: str, leftTileCount: int, liqi: Dict, operation: Dict):
         super().iDealTile(seat, tile, leftTileCount, liqi, operation)
         if liqi:
             self.cardRecorder.add('reach_accepted', actor=self.userid[liqi.get('seat', 0)])
         if operation != None:
-            # opList = operation.get('operationList', [])
-            # canJiaGang = any(
-            #     op['type'] == Operation.JiaGang.value for op in opList)
-            # canLiqi = any(op['type'] == Operation.Liqi.value for op in opList)
-            # canZimo = any(op['type'] == Operation.Zimo.value for op in opList)
-            # canHu = any(op['type'] == Operation.Hu.value for op in opList)
-            self.recv()
+            opList = operation.get('operationList', [])
+            canJiaGang = any(
+                op['type'] == Operation.JiaGang.value for op in opList)
+            canLiqi = any(op['type'] == Operation.Liqi.value for op in opList)
+            canZimo = any(op['type'] == Operation.Zimo.value for op in opList)
+            canHu = any(op['type'] == Operation.Hu.value for op in opList)
+            if canHu or canZimo or canLiqi or canJiaGang:
+                self.recv()
         
-        self.cardRecorder.add('tsumo', actor=self.userid[seat], pai=self.transcard(tile))
+        self.cardRecorder.add('tsumo', actor=seat, pai=self.transcard(tile))
         self.recv()
     
     def discardTile(self, seat: int, tile: str, moqie: bool, isLiqi: bool, operation):
@@ -297,16 +304,17 @@ class AIWrapper(sdk.GUIInterface, sdk.MajsoulHandler):
         
         if operation != None:
             assert(operation.get('seat', 0) == self.mySeat)
-            # opList = operation.get('operationList', [])
-            # canChi = any(op['type'] == Operation.Chi.value for op in opList)
-            # canPeng = any(op['type'] == Operation.Peng.value for op in opList)
-            # canGang = any(
-            #     op['type'] == Operation.MingGang.value for op in opList)
-            # canHu = any(op['type'] == Operation.Hu.value for op in opList)
-            self.recv()
+            opList = operation.get('operationList', [])
+            canChi = any(op['type'] == Operation.Chi.value for op in opList)
+            canPeng = any(op['type'] == Operation.Peng.value for op in opList)
+            canGang = any(
+                op['type'] == Operation.MingGang.value for op in opList)
+            canHu = any(op['type'] == Operation.Hu.value for op in opList)
+            if canHu or canGang or canPeng or canChi:
+                self.recv()
         
         
-        self.cardRecorder.add('dahai', actor=self.userid[seat], pai=self.transcard(tile), tsumogiri=moqie)
+        self.cardRecorder.add('dahai', actor=seat, pai=self.transcard(tile), tsumogiri=moqie)
         
 
     def chiPengGang(self, type_: int, seat: int, tiles: List[str], froms: List[int], tileStates: List[int]):
@@ -373,10 +381,12 @@ class AIWrapper(sdk.GUIInterface, sdk.MajsoulHandler):
         
     def recv(self):
         # 发送并接受数据
-        p = Popen('akochan/system.exe mjai_stdin ' + str(self.mySeat), shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        p = Popen('system.exe mjai_stdin ' + str(self.mySeat), shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, cwd='akochan')
+
         p.stdin.write(self.cardRecorder.get().encode('utf-8'))
         p.stdin.flush()
         p.stdin.close()
+        p.wait()
         move = p.stdout.readline().decode('utf-8')
         p.stdout.close()
         p.stderr.close()
@@ -476,9 +486,23 @@ def MainLoop(level=None):
                 break
 
 
+def replayWebSocket(filename='ws_dump.pkl'):
+    # 回放历史websocket报文，按顺序交由handler.parse
+    handler = AIWrapper()
+    history_msg = pickle.load(open(filename, 'rb'))
+    liqi = LiqiProto()
+    for flow_msg in history_msg:
+        result = liqi.parse(flow_msg)
+        handler.parse(result)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="MajsoulAI")
     parser.add_argument('-l', '--level', default=None)
+    parser.add_argument('-t', '--test', default=None)
     args = parser.parse_args()
-    level = None if args.level == None else int(args.level)
-    MainLoop(level=level)
+    if args.test != None:
+        replayWebSocket(args.test)
+    else:
+        level = None if args.level == None else int(args.level)
+        MainLoop(level=level)
+    
